@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RunTracker Pro</title>
+
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"/>
+</head>
+<body class="h-screen w-screen bg-black text-white overflow-hidden">
+
+  <!-- Contenedor principal -->
+  <div class="flex flex-col h-full">
+
+    <!-- Mapa -->
+    
+
+    <!-- Panel inferior -->
+    <div class="flex-1 bg-gradient-to-br from-indigo-900 via-fuchsia-800 to-cyan-700 p-4 flex flex-col justify-between">
+
+      <!-- Selección de actividad -->
+      <div class="flex justify-center gap-3 mb-4">
+        <button class="activity-btn px-4 py-2 rounded-full bg-green-600 text-white font-semibold ring-4 ring-yellow-300" data-type="running">🏃 Correr</button>
+        <button class="activity-btn px-4 py-2 rounded-full bg-blue-600 text-white font-semibold" data-type="walking">🚶 Caminar</button>
+        <button class="activity-btn px-4 py-2 rounded-full bg-purple-600 text-white font-semibold" data-type="cycling">🚴 Ciclismo</button>
+      </div>
+
+      <!-- Estadísticas grandes -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-center mb-4">
+        <div class="p-3 bg-white/10 rounded-xl shadow">
+          <p class="text-xs uppercase">Distancia</p>
+          <p id="distance" class="text-4xl font-bold text-cyan-300">0.00</p>
+          <p class="text-sm">km</p>
+        </div>
+        <div class="p-3 bg-white/10 rounded-xl shadow">
+          <p class="text-xs uppercase">Tiempo</p>
+          <p id="time" class="text-4xl font-bold text-cyan-300">00:00:00</p>
+        </div>
+        <div class="p-3 bg-white/10 rounded-xl shadow">
+          <p class="text-xs uppercase">Velocidad</p>
+          <p id="speed" class="text-4xl font-bold text-cyan-300">0.0</p>
+          <p class="text-sm">km/h</p>
+        </div>
+        <div class="p-3 bg-white/10 rounded-xl shadow">
+          <p class="text-xs uppercase">Calorías</p>
+          <p id="calories" class="text-4xl font-bold text-cyan-300">0</p>
+          <p class="text-sm">kcal</p>
+        </div>
+      </div>
+
+      <!-- Botones -->
+      <div class="flex justify-center gap-4">
+        <button id="startBtn" class="px-6 py-3 rounded-full bg-green-500 hover:bg-green-600 font-bold text-lg shadow-lg">Comenzar</button>
+        <button id="stopBtn" class="px-6 py-3 rounded-full bg-red-500 hover:bg-red-600 font-bold text-lg shadow-lg">Detener</button>
+        <button id="saveBtn" class="px-6 py-3 rounded-full bg-purple-500 hover:bg-purple-600 font-bold text-lg shadow-lg">Guardar</button>
+      </div>
+      
+      <div class="flex-none h-1/2">
+      <div id="map" class="h-full w-full"></div>
+    </div>
+      <!-- Historial -->
+      <div class="mt-4 overflow-y-auto max-h-40">
+        <h2 class="text-lg font-bold mb-2">Historial</h2>
+        <ul id="activitiesList" class="space-y-1 text-sm"></ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+  <script>
+    // Variables globales
+    let map, polyline;
+    let isTracking = false;
+    let startTime, elapsedTime = 0, timerInterval;
+    let positions = [], totalDistance = 0;
+    let currentActivityType = "running"; 
+    let userWeight = 70; // default
+
+    // DOM refs
+    const distanceEl = document.getElementById('distance');
+    const timeEl = document.getElementById('time');
+    const speedEl = document.getElementById('speed');
+    const caloriesEl = document.getElementById('calories');
+    const activitiesList = document.getElementById('activitiesList');
+
+    // Inicializar mapa
+    function initMap() {
+      map = L.map('map').setView([40.416775, -3.70379], 13);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+      polyline = L.polyline([], { color: '#2ecc71', weight: 6 }).addTo(map);
+
+      // centrar en ubicación inicial
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(pos => {
+          map.setView([pos.coords.latitude, pos.coords.longitude], 15);
+        });
+      }
+    }
+
+    // Utilidades
+    function formatTime(sec) {
+      const h = String(Math.floor(sec/3600)).padStart(2,"0");
+      const m = String(Math.floor((sec%3600)/60)).padStart(2,"0");
+      const s = String(sec%60).padStart(2,"0");
+      return `${h}:${m}:${s}`;
+    }
+
+    function haversine(lat1, lon1, lat2, lon2) {
+      const R=6371, dLat=(lat2-lat1)*Math.PI/180, dLon=(lon2-lon1)*Math.PI/180;
+      const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+      return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+    }
+
+    function calculateCalories() {
+      let met = currentActivityType==="running" ? 9.8 : currentActivityType==="cycling" ? 7.5 : 3.5;
+      const hours = elapsedTime / 3600;
+      return Math.round(met * userWeight * hours);
+    }
+
+    // Tracking
+    function startTracking() {
+      if (isTracking) return;
+      isTracking = true;
+      positions = []; totalDistance = 0; elapsedTime = 0;
+      startTime = new Date();
+      polyline.setLatLngs([]);
+
+      timerInterval = setInterval(() => {
+        elapsedTime = Math.floor((new Date() - startTime) / 1000);
+        timeEl.textContent = formatTime(elapsedTime);
+
+        const hours = elapsedTime / 3600;
+        const speed = hours > 0 ? totalDistance / hours : 0;
+        speedEl.textContent = speed.toFixed(1);
+        caloriesEl.textContent = calculateCalories();
+      }, 1000);
+
+      navigator.geolocation.watchPosition(pos => {
+        const { latitude, longitude } = pos.coords;
+        positions.push([latitude, longitude]);
+        polyline.setLatLngs(positions);
+        map.panTo([latitude, longitude]);
+        if (positions.length > 1) {
+          const p1 = positions[positions.length-2], p2 = positions[positions.length-1];
+          totalDistance += haversine(p1[0],p1[1],p2[0],p2[1]);
+          distanceEl.textContent = totalDistance.toFixed(2);
+        }
+      }, err => console.error(err), { enableHighAccuracy:true });
+    }
+
+    function stopTracking() {
+      isTracking = false;
+      clearInterval(timerInterval);
+    }
+
+    function saveActivity() {
+      const activity = {
+        date: new Date().toISOString(),
+        distance: totalDistance,
+        time: elapsedTime,
+        type: currentActivityType,
+        positions: positions,
+        calories: calculateCalories()
+      };
+      let activities = JSON.parse(localStorage.getItem("activities") || "[]");
+      activities.push(activity);
+      localStorage.setItem("activities", JSON.stringify(activities));
+      loadActivities();
+      alert("Actividad guardada ✅");
+    }
+
+    function loadActivities() {
+      activitiesList.innerHTML = "";
+      const activities = JSON.parse(localStorage.getItem("activities") || "[]");
+      activities.reverse().forEach(a => {
+        const li = document.createElement("li");
+        const icon = a.type==="running" ? "🏃" : a.type==="walking" ? "🚶" : "🚴";
+        li.textContent = `${icon} ${a.type} | ${new Date(a.date).toLocaleString()} - ${a.distance.toFixed(2)} km en ${formatTime(a.time)} | 🔥 ${a.calories} kcal`;
+        activitiesList.appendChild(li);
+      });
+    }
+
+    // Cambio actividad
+    const activityBtns = document.querySelectorAll('.activity-btn');
+    activityBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        currentActivityType = btn.dataset.type;
+        activityBtns.forEach(b => b.classList.remove("ring-4","ring-yellow-300"));
+        btn.classList.add("ring-4","ring-yellow-300");
+        let color = currentActivityType==="running" ? "#2ecc71" : currentActivityType==="walking" ? "#3498db" : "#9b59b6";
+        if(polyline) polyline.setStyle({color});
+      });
+    });
+
+    // Eventos
+    document.getElementById('startBtn').onclick=startTracking;
+    document.getElementById('stopBtn').onclick=stopTracking;
+    document.getElementById('saveBtn').onclick=saveActivity;
+
+    window.onload=()=>{initMap();loadActivities();}
+  </script>
+</body>
+</html>
+
+
