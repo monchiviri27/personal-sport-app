@@ -1,209 +1,781 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RunTracker Pro</title>
-
-  <!-- Tailwind -->
-  <script src="https://cdn.tailwindcss.com"></script>
-
-  <!-- Leaflet -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"/>
-</head>
-<body class="h-screen w-screen bg-black text-white overflow-hidden">
-
-  <!-- Contenedor principal -->
-  <div class="flex flex-col h-full">
-
-    <!-- Mapa -->
-    
-
-    <!-- Panel inferior -->
-    <div class="flex-1 bg-gradient-to-br from-indigo-900 via-fuchsia-800 to-cyan-700 p-4 flex flex-col justify-between">
-
-      <!-- Selección de actividad -->
-      <div class="flex justify-center gap-3 mb-4">
-        <button class="activity-btn px-4 py-2 rounded-full bg-green-600 text-white font-semibold ring-4 ring-yellow-300" data-type="running">🏃 Correr</button>
-        <button class="activity-btn px-4 py-2 rounded-full bg-blue-600 text-white font-semibold" data-type="walking">🚶 Caminar</button>
-        <button class="activity-btn px-4 py-2 rounded-full bg-purple-600 text-white font-semibold" data-type="cycling">🚴 Ciclismo</button>
-      </div>
-
-      <!-- Estadísticas grandes -->
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-center mb-4">
-        <div class="p-3 bg-white/10 rounded-xl shadow">
-          <p class="text-xs uppercase">Distancia</p>
-          <p id="distance" class="text-4xl font-bold text-cyan-300">0.00</p>
-          <p class="text-sm">km</p>
-        </div>
-        <div class="p-3 bg-white/10 rounded-xl shadow">
-          <p class="text-xs uppercase">Tiempo</p>
-          <p id="time" class="text-4xl font-bold text-cyan-300">00:00:00</p>
-        </div>
-        <div class="p-3 bg-white/10 rounded-xl shadow">
-          <p class="text-xs uppercase">Velocidad</p>
-          <p id="speed" class="text-4xl font-bold text-cyan-300">0.0</p>
-          <p class="text-sm">km/h</p>
-        </div>
-        <div class="p-3 bg-white/10 rounded-xl shadow">
-          <p class="text-xs uppercase">Calorías</p>
-          <p id="calories" class="text-4xl font-bold text-cyan-300">0</p>
-          <p class="text-sm">kcal</p>
-        </div>
-      </div>
-
-      <!-- Botones -->
-      <div class="flex justify-center gap-4">
-        <button id="startBtn" class="px-6 py-3 rounded-full bg-green-500 hover:bg-green-600 font-bold text-lg shadow-lg">Comenzar</button>
-        <button id="stopBtn" class="px-6 py-3 rounded-full bg-red-500 hover:bg-red-600 font-bold text-lg shadow-lg">Detener</button>
-        <button id="saveBtn" class="px-6 py-3 rounded-full bg-purple-500 hover:bg-purple-600 font-bold text-lg shadow-lg">Guardar</button>
-      </div>
-      
-      <div class="flex-none h-1/2">
-      <div id="map" class="h-full w-full"></div>
-    </div>
-      <!-- Historial -->
-      <div class="mt-4 overflow-y-auto max-h-40">
-        <h2 class="text-lg font-bold mb-2">Historial</h2>
-        <ul id="activitiesList" class="space-y-1 text-sm"></ul>
-      </div>
-    </div>
-  </div>
-
-  <!-- Scripts -->
-  <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
-  <script>
-    // Variables globales
-    let map, polyline;
-    let isTracking = false;
-    let startTime, elapsedTime = 0, timerInterval;
-    let positions = [], totalDistance = 0;
-    let currentActivityType = "running"; 
-    let userWeight = 70; // default
-
-    // DOM refs
-    const distanceEl = document.getElementById('distance');
-    const timeEl = document.getElementById('time');
-    const speedEl = document.getElementById('speed');
-    const caloriesEl = document.getElementById('calories');
-    const activitiesList = document.getElementById('activitiesList');
-
-    // Inicializar mapa
-    function initMap() {
-      map = L.map('map').setView([40.416775, -3.70379], 13);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-      polyline = L.polyline([], { color: '#2ecc71', weight: 6 }).addTo(map);
-
-      // centrar en ubicación inicial
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(pos => {
-          map.setView([pos.coords.latitude, pos.coords.longitude], 15);
-        });
-      }
-    }
-
-    // Utilidades
-    function formatTime(sec) {
-      const h = String(Math.floor(sec/3600)).padStart(2,"0");
-      const m = String(Math.floor((sec%3600)/60)).padStart(2,"0");
-      const s = String(sec%60).padStart(2,"0");
-      return `${h}:${m}:${s}`;
-    }
-
-    function haversine(lat1, lon1, lat2, lon2) {
-      const R=6371, dLat=(lat2-lat1)*Math.PI/180, dLon=(lon2-lon1)*Math.PI/180;
-      const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
-      return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
-    }
-
-    function calculateCalories() {
-      let met = currentActivityType==="running" ? 9.8 : currentActivityType==="cycling" ? 7.5 : 3.5;
-      const hours = elapsedTime / 3600;
-      return Math.round(met * userWeight * hours);
-    }
-
-    // Tracking
-    function startTracking() {
-      if (isTracking) return;
-      isTracking = true;
-      positions = []; totalDistance = 0; elapsedTime = 0;
-      startTime = new Date();
-      polyline.setLatLngs([]);
-
-      timerInterval = setInterval(() => {
-        elapsedTime = Math.floor((new Date() - startTime) / 1000);
-        timeEl.textContent = formatTime(elapsedTime);
-
-        const hours = elapsedTime / 3600;
-        const speed = hours > 0 ? totalDistance / hours : 0;
-        speedEl.textContent = speed.toFixed(1);
-        caloriesEl.textContent = calculateCalories();
-      }, 1000);
-
-      navigator.geolocation.watchPosition(pos => {
-        const { latitude, longitude } = pos.coords;
-        positions.push([latitude, longitude]);
-        polyline.setLatLngs(positions);
-        map.panTo([latitude, longitude]);
-        if (positions.length > 1) {
-          const p1 = positions[positions.length-2], p2 = positions[positions.length-1];
-          totalDistance += haversine(p1[0],p1[1],p2[0],p2[1]);
-          distanceEl.textContent = totalDistance.toFixed(2);
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RunTracker Pro - Inicio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        cyber: {
+                            blue: '#00DDFF',
+                            purple: '#7E22CE',
+                            pink: '#EC4899',
+                            indigo: '#4F46E5',
+                            black: '#0F172A',
+                            gray: '#1E293B',
+                            dark: '#0A0E17'
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'glow': 'glow 2s ease-in-out infinite alternate',
+                    },
+                    keyframes: {
+                        glow: {
+                            'from': { boxShadow: '0 0 5px #00DDFF, 0 0 10px #00DDFF, 0 0 15px #00DDFF' },
+                            'to': { boxShadow: '0 0 10px #00DDFF, 0 0 20px #00DDFF, 0 0 30px #00DDFF' }
+                        }
+                    }
+                }
+            }
         }
-      }, err => console.error(err), { enableHighAccuracy:true });
-    }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700&family=Roboto:wght@300;400;500;700&display=swap');
+        
+        body {
+            font-family: 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #0A0E17 0%, #0F172A 100%);
+            color: #E2E8F0;
+            min-height: 100vh;
+        }
+        
+        h1, h2, h3, .cyber-font {
+            font-family: 'Orbitron', sans-serif;
+        }
+        
+        .cyber-glass {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(0, 221, 255, 0.2);
+            box-shadow: 0 8px 32px 0 rgba(0, 221, 255, 0.15);
+        }
+        
+        .cyber-border {
+            border: 1px solid #00DDFF;
+            box-shadow: 0 0 10px rgba(0, 221, 255, 0.5);
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1rem;
+        }
+        
+        @media (min-width: 768px) {
+            .stats-grid {
+                grid-template-columns: repeat(4, 1fr);
+            }
+        }
+        
+        .activity-btn.active {
+            background: linear-gradient(135deg, #00DDFF 0%, #4F46E5 100%);
+            color: white;
+            box-shadow: 0 0 15px rgba(0, 221, 255, 0.7);
+        }
+        
+        /* Animaciones personalizadas */
+        @keyframes cyber-pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+        
+        .cyber-pulse {
+            animation: cyber-pulse 2s infinite;
+        }
+        
+        /* Scrollbar personalizado */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #1E293B;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #00DDFF;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4F46E5;
+        }
 
-    function stopTracking() {
-      isTracking = false;
-      clearInterval(timerInterval);
-    }
+        /* Efecto de carga */
+        .loading-spinner {
+            border: 3px solid rgba(0, 221, 255, 0.3);
+            border-radius: 50%;
+            border-top: 3px solid #00DDFF;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
 
-    function saveActivity() {
-      const activity = {
-        date: new Date().toISOString(),
-        distance: totalDistance,
-        time: elapsedTime,
-        type: currentActivityType,
-        positions: positions,
-        calories: calculateCalories()
-      };
-      let activities = JSON.parse(localStorage.getItem("activities") || "[]");
-      activities.push(activity);
-      localStorage.setItem("activities", JSON.stringify(activities));
-      loadActivities();
-      alert("Actividad guardada ✅");
-    }
+        /* Transiciones suaves */
+        .transition-all {
+            transition: all 0.3s ease;
+        }
+        
+        /* Pantalla completa */
+        #activityScreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #0A0E17 0%, #0F172A 100%);
+            z-index: 50;
+            display: none;
+            flex-direction: column;
+            padding: 1rem;
+        }
+        
+        .fullscreen-stats {
+            font-size: 2.5rem;
+        }
+        
+        @media (max-width: 380px) {
+            .fullscreen-stats {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+    <!-- Header -->
+    <header class="cyber-glass py-4 px-6 sticky top-0 z-10">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-2xl md:text-3xl font-bold cyber-font text-cyber-blue">
+                <i class="fas fa-running mr-2"></i>RunTracker Pro
+            </h1>
+            <div class="flex items-center space-x-4">
+                <div id="gpsStatus" class="flex items-center">
+                    <span class="h-3 w-3 rounded-full bg-red-500 mr-2"></span>
+                    <span class="text-sm">GPS Inactivo</span>
+                </div>
+            </div>
+        </div>
+    </header>
 
-    function loadActivities() {
-      activitiesList.innerHTML = "";
-      const activities = JSON.parse(localStorage.getItem("activities") || "[]");
-      activities.reverse().forEach(a => {
-        const li = document.createElement("li");
-        const icon = a.type==="running" ? "🏃" : a.type==="walking" ? "🚶" : "🚴";
-        li.textContent = `${icon} ${a.type} | ${new Date(a.date).toLocaleString()} - ${a.distance.toFixed(2)} km en ${formatTime(a.time)} | 🔥 ${a.calories} kcal`;
-        activitiesList.appendChild(li);
-      });
-    }
+    <!-- Contenido principal -->
+    <main class="flex-grow container mx-auto px-4 py-6">
+        <!-- Resumen de estadísticas -->
+        <div class="cyber-glass rounded-xl p-4 mb-6 cyber-border">
+            <h2 class="text-xl cyber-font text-cyber-blue mb-4 flex items-center">
+                <i class="fas fa-chart-line mr-2"></i> Resumen Semanal
+            </h2>
+            <div class="stats-grid">
+                <div class="cyber-glass rounded-xl p-4 text-center cyber-border">
+                    <div class="text-cyber-blue cyber-font mb-1"><i class="fas fa-road"></i> Distancia</div>
+                    <div class="text-2xl md:text-3xl font-bold cyber-font" id="weeklyDistance">0.00 km</div>
+                </div>
+                <div class="cyber-glass rounded-xl p-4 text-center cyber-border">
+                    <div class="text-cyber-blue cyber-font mb-1"><i class="fas fa-clock"></i> Tiempo</div>
+                    <div class="text-2xl md:text-3xl font-bold cyber-font" id="weeklyTime">00:00:00</div>
+                </div>
+                <div class="cyber-glass rounded-xl p-4 text-center cyber-border">
+                    <div class="text-cyber-blue cyber-font mb-1"><i class="fas fa-fire"></i> Calorías</div>
+                    <div class="text-2xl md:text-3xl font-bold cyber-font" id="weeklyCalories">0</div>
+                </div>
+                <div class="cyber-glass rounded-xl p-4 text-center cyber-border">
+                    <div class="text-cyber-blue cyber-font mb-1"><i class="fas fa-running"></i> Actividades</div>
+                    <div class="text-2xl md:text-3xl font-bold cyber-font" id="weeklyActivities">0</div>
+                </div>
+            </div>
+        </div>
 
-    // Cambio actividad
-    const activityBtns = document.querySelectorAll('.activity-btn');
-    activityBtns.forEach(btn => {
-      btn.addEventListener('click', () => {
-        currentActivityType = btn.dataset.type;
-        activityBtns.forEach(b => b.classList.remove("ring-4","ring-yellow-300"));
-        btn.classList.add("ring-4","ring-yellow-300");
-        let color = currentActivityType==="running" ? "#2ecc71" : currentActivityType==="walking" ? "#3498db" : "#9b59b6";
-        if(polyline) polyline.setStyle({color});
-      });
-    });
+        <!-- Selector de tipo de actividad -->
+        <div class="flex justify-center space-x-2 mb-6">
+            <button class="activity-btn py-2 px-4 rounded-lg cyber-glass cyber-font text-sm md:text-base" data-type="running">
+                <i class="fas fa-running mr-1"></i> Correr
+            </button>
+            <button class="activity-btn py-2 px-4 rounded-lg cyber-glass cyber-font text-sm md:text-base" data-type="walking">
+                <i class="fas fa-walking mr-1"></i> Andar
+            </button>
+            <button class="activity-btn py-2 px-4 rounded-lg cyber-glass cyber-font text-sm md:text-base" data-type="cycling">
+                <i class="fas fa-bicycle mr-1"></i> Ciclismo
+            </button>
+        </div>
 
-    // Eventos
-    document.getElementById('startBtn').onclick=startTracking;
-    document.getElementById('stopBtn').onclick=stopTracking;
-    document.getElementById('saveBtn').onclick=saveActivity;
+        <!-- Botón para comenzar actividad -->
+        <div class="text-center mb-6">
+            <button id="startActivityBtn" class="cyber-pulse bg-cyber-blue text-cyber-black py-4 px-8 rounded-full cyber-font font-bold text-lg flex items-center justify-center mx-auto">
+                <i class="fas fa-play mr-2"></i> Comenzar Actividad
+            </button>
+        </div>
 
-    window.onload=()=>{initMap();loadActivities();}
-  </script>
+        <!-- Historial de actividades recientes -->
+        <div class="cyber-glass rounded-xl p-4 mb-6 cyber-border">
+            <h2 class="text-xl cyber-font text-cyber-blue mb-4 flex items-center">
+                <i class="fas fa-history mr-2"></i> Actividades Recientes
+            </h2>
+            <div class="overflow-y-auto max-h-60" id="recentActivities">
+                <div class="text-center py-8 text-cyber-blue">
+                    <i class="fas fa-inbox text-4xl mb-2"></i>
+                    <p>No hay actividades recientes</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Configuración de actividad -->
+        <div class="cyber-glass rounded-xl p-4 mb-6 cyber-border">
+            <h3 class="text-lg cyber-font text-cyber-blue mb-4 flex items-center">
+                <i class="fas fa-cogs mr-2"></i> Configuración
+            </h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-cyber-blue mb-1">Peso (kg)</label>
+                    <input type="number" id="userWeight" class="w-full cyber-glass border border-cyber-blue rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-cyber-blue" placeholder="70" value="70">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-cyber-blue mb-1">Intensidad</label>
+                    <select id="activityIntensity" class="w-full cyber-glass border border-cyber-blue rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-cyber-blue">
+                        <option value="light">Leve</option>
+                        <option value="moderate" selected>Moderada</option>
+                        <option value="intense">Intensa</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Pantalla de actividad (oculta inicialmente) -->
+    <div id="activityScreen">
+        <!-- Header de la pantalla de actividad -->
+        <header class="cyber-glass py-4 px-6 flex justify-between items-center mb-4">
+            <button id="closeActivityBtn" class="text-cyber-blue cyber-font">
+                <i class="fas fa-arrow-left mr-2"></i> Volver
+            </button>
+            <div class="flex items-center">
+                <span class="h-3 w-3 rounded-full bg-green-500 mr-2"></span>
+                <span class="text-sm">Grabando</span>
+            </div>
+        </header>
+
+        <!-- Estadísticas en tiempo real -->
+        <div class="stats-grid mb-6">
+            <div class="cyber-glass rounded-xl p-4 text-center cyber-border">
+                <div class="text-cyber-blue cyber-font mb-1"><i class="fas fa-road"></i> Distancia</div>
+                <div class="fullscreen-stats font-bold cyber-font" id="fsDistance">0.00 km</div>
+            </div>
+            <div class="cyber-glass rounded-xl p-4 text-center cyber-border">
+                <div class="text-cyber-blue cyber-font mb-1"><i class="fas fa-clock"></i> Tiempo</div>
+                <div class="fullscreen-stats font-bold cyber-font" id="fsTime">00:00:00</div>
+            </div>
+            <div class="cyber-glass rounded-xl p-4 text-center cyber-border">
+                <div class="text-cyber-blue cyber-font mb-1"><i class="fas fa-tachometer-alt"></i> Velocidad</div>
+                <div class="fullscreen-stats font-bold cyber-font" id="fsSpeed">0.0 km/h</div>
+            </div>
+            <div class="cyber-glass rounded-xl p-4 text-center cyber-border">
+                <div class="text-cyber-blue cyber-font mb-1"><i class="fas fa-fire"></i> Ritmo</div>
+                <div class="fullscreen-stats font-bold cyber-font" id="fsPace">0:00 min/km</div>
+            </div>
+        </div>
+
+        <!-- Controles de actividad -->
+        <div class="flex justify-center space-x-4 mb-6 mt-auto">
+            <button id="pauseActivityBtn" class="bg-cyber-gray text-cyber-blue py-3 px-6 rounded-full cyber-font font-bold flex items-center">
+                <i class="fas fa-pause mr-2"></i> Pausar
+            </button>
+            <button id="stopActivityBtn" class="bg-cyber-blue text-cyber-black py-3 px-6 rounded-full cyber-font font-bold flex items-center">
+                <i class="fas fa-stop mr-2"></i> Finalizar
+            </button>
+        </div>
+
+        <!-- Mapa (simulado) -->
+        <div class="cyber-glass cyber-border rounded-xl h-40 flex items-center justify-center">
+            <div class="text-cyber-blue text-center">
+                <i class="fas fa-map-marked-alt text-3xl mb-2"></i>
+                <p>Mapa en tiempo real</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="cyber-glass py-4 px-6 text-center">
+        <p class="text-sm cyber-font text-cyber-blue">
+            RunTracker Pro © 2023 - Guardando datos localmente
+        </p>
+    </footer>
+
+    <script>
+        // Variables globales
+        let isTracking = false;
+        let startTime, currentTime, elapsedTime = 0;
+        let timerInterval;
+        let positions = [];
+        let totalDistance = 0;
+        let watchId;
+        let currentActivityType = 'running';
+        let currentSpeed = 0;
+        let speedReadings = [];
+        let isPaused = false;
+        let pauseStartTime = 0;
+        let totalPauseTime = 0;
+        let isTestingOnDesktop = true; // Cambiar a false en dispositivo móvil
+        
+        // Elementos DOM
+        const startActivityBtn = document.getElementById('startActivityBtn');
+        const closeActivityBtn = document.getElementById('closeActivityBtn');
+        const pauseActivityBtn = document.getElementById('pauseActivityBtn');
+        const stopActivityBtn = document.getElementById('stopActivityBtn');
+        const activityScreen = document.getElementById('activityScreen');
+        const fsDistance = document.getElementById('fsDistance');
+        const fsTime = document.getElementById('fsTime');
+        const fsSpeed = document.getElementById('fsSpeed');
+        const fsPace = document.getElementById('fsPace');
+        const gpsStatus = document.getElementById('gpsStatus');
+        const activityBtns = document.querySelectorAll('.activity-btn');
+        const recentActivities = document.getElementById('recentActivities');
+        const weeklyDistance = document.getElementById('weeklyDistance');
+        const weeklyTime = document.getElementById('weeklyTime');
+        const weeklyCalories = document.getElementById('weeklyCalories');
+        const weeklyActivities = document.getElementById('weeklyActivities');
+        const userWeight = document.getElementById('userWeight');
+        const activityIntensity = document.getElementById('activityIntensity');
+        
+        // Inicializar la aplicación
+        function init() {
+            // Establecer el tipo de actividad inicial
+            setActivityType('running');
+            
+            // Configurar event listeners
+            setupEventListeners();
+            
+            // Cargar datos iniciales
+            loadInitialData();
+            
+            // Detectar si estamos en un dispositivo móvil
+            if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
+                isTestingOnDesktop = false;
+                // Solicitar permisos de geolocalización en móvil
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                        () => updateGPSStatus(true),
+                        (error) => {
+                            console.error('Error obteniendo ubicación:', error);
+                            updateGPSStatus(false);
+                        }
+                    );
+                }
+            } else {
+                // Estamos en ordenador, mostrar advertencia
+                showNotification('Modo simulación activado (estás en ordenador)');
+                updateGPSStatus(false);
+            }
+        }
+        
+        // Configurar event listeners
+        function setupEventListeners() {
+            startActivityBtn.addEventListener('click', openActivityScreen);
+            closeActivityBtn.addEventListener('click', closeActivityScreen);
+            pauseActivityBtn.addEventListener('click', togglePauseActivity);
+            stopActivityBtn.addEventListener('click', stopActivity);
+            
+            activityBtns.forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    setActivityType(e.currentTarget.dataset.type);
+                });
+            });
+        }
+        
+        // Cargar datos iniciales
+        function loadInitialData() {
+            // Cargar actividades desde localStorage
+            loadRecentActivities();
+            
+            // Cargar estadísticas semanales
+            loadWeeklyStats();
+        }
+        
+        // Abrir pantalla de actividad
+        function openActivityScreen() {
+            activityScreen.style.display = 'flex';
+            document.body.style.overflow = 'hidden';
+            startTracking();
+        }
+        
+        // Cerrar pantalla de actividad
+        function closeActivityScreen() {
+            if (isTracking) {
+                if (confirm('¿Estás seguro de que quieres salir? Se perderá la actividad en curso.')) {
+                    stopTracking();
+                    activityScreen.style.display = 'none';
+                    document.body.style.overflow = 'auto';
+                }
+            } else {
+                activityScreen.style.display = 'none';
+                document.body.style.overflow = 'auto';
+            }
+        }
+        
+        // Establecer el tipo de actividad
+        function setActivityType(type) {
+            currentActivityType = type;
+            
+            // Actualizar la interfaz
+            activityBtns.forEach(btn => {
+                if (btn.dataset.type === type) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+        }
+        
+        // Actualizar estado del GPS
+        function updateGPSStatus(active) {
+            const statusIndicator = gpsStatus.querySelector('span');
+            const statusText = gpsStatus.querySelector('span:last-child');
+            
+            if (active) {
+                statusIndicator.classList.remove('bg-red-500');
+                statusIndicator.classList.add('bg-green-500');
+                statusText.textContent = 'GPS Activo';
+            } else {
+                statusIndicator.classList.remove('bg-green-500');
+                statusIndicator.classList.add('bg-red-500');
+                statusText.textContent = isTestingOnDesktop ? 'Modo Simulación' : 'GPS Inactivo';
+            }
+        }
+        
+        // Calcular distancia entre dos coordenadas (fórmula de Haversine)
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Radio de la Tierra en km
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = 
+                Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+        
+        // Calcular calorías (fórmula simplificada)
+        function calculateCalories() {
+            const weight = parseFloat(userWeight.value) || 70;
+            const metValue = currentActivityType === 'running' ? 9.8 : 
+                            currentActivityType === 'cycling' ? 7.5 : 3.5;
+            
+            // Ajustar por intensidad
+            const intensityMultiplier = activityIntensity.value === 'light' ? 0.8 : 
+                                      activityIntensity.value === 'intense' ? 1.2 : 1;
+            
+            // Fórmula simplificada: MET * peso * tiempo (horas) * intensidad
+            const hours = elapsedTime / 3600;
+            return Math.round(metValue * weight * hours * intensityMultiplier);
+        }
+        
+        // Actualizar la interfaz con las estadísticas
+        function updateStats() {
+            fsDistance.textContent = totalDistance.toFixed(2) + ' km';
+            fsTime.textContent = formatTime(elapsedTime);
+            
+            // Calcular velocidad (km/h)
+            const hours = elapsedTime / 3600;
+            const speed = hours > 0 ? totalDistance / hours : 0;
+            currentSpeed = speed;
+            fsSpeed.textContent = speed.toFixed(1) + ' km/h';
+            
+            // Calcular ritmo (min/km)
+            const pace = totalDistance > 0 ? (elapsedTime / 60) / totalDistance : 0;
+            const paceMin = Math.floor(pace);
+            const paceSec = Math.round((pace - paceMin) * 60);
+            fsPace.textContent = `${paceMin}:${paceSec.toString().padStart(2, '0')} min/km`;
+            
+            // En modo escritorio, simular movimiento
+            if (isTestingOnDesktop && isTracking && !isPaused) {
+                // Simular aumento de distancia (aproximadamente 10 km/h)
+                totalDistance += 10 / 3600; // 10 km/h = 10/3600 km por segundo
+                
+                // Simular datos de GPS aleatorios alrededor de Madrid
+                const baseLat = 40.4168;
+                const baseLng = -3.7038;
+                const newPosition = { 
+                    lat: baseLat + (Math.random() * 0.01 - 0.005), 
+                    lng: baseLng + (Math.random() * 0.01 - 0.005), 
+                    time: new Date() 
+                };
+                positions.push(newPosition);
+            }
+            
+            // Detectar si el usuario se ha detenido (solo en móvil)
+            if (!isTestingOnDesktop) {
+                speedReadings.push(speed);
+                if (speedReadings.length > 10) {
+                    speedReadings.shift();
+                    
+                    const avgSpeed = speedReadings.reduce((a, b) => a + b, 0) / speedReadings.length;
+                    if (avgSpeed < 0.5 && isTracking && !isPaused) {
+                        // Pausar automáticamente después de 10 segundos de inactividad
+                        togglePauseActivity();
+                        showNotification('Actividad pausada automáticamente por inactividad');
+                    }
+                }
+            }
+        }
+        
+        // Formatear el tiempo
+        function formatTime(seconds) {
+            const hrs = Math.floor(seconds / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+        
+        // Formatear tiempo para mostrar
+        function formatTimeForDisplay(seconds) {
+            const hrs = Math.floor(seconds / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            return `${hrs}h ${mins}m`;
+        }
+        
+        // Iniciar el seguimiento
+        function startTracking() {
+            if (isTracking) return;
+            
+            isTracking = true;
+            isPaused = false;
+            pauseActivityBtn.innerHTML = '<i class="fas fa-pause mr-2"></i> Pausar';
+            positions = [];
+            totalDistance = 0;
+            elapsedTime = 0;
+            totalPauseTime = 0;
+            speedReadings = [];
+            startTime = new Date();
+            
+            // Actualizar el tiempo en tiempo real
+            timerInterval = setInterval(() => {
+                if (!isPaused) {
+                    currentTime = new Date();
+                    elapsedTime = Math.floor((currentTime - startTime) / 1000) - totalPauseTime;
+                    updateStats();
+                }
+            }, 1000);
+            
+            // Configurar el watcher de geolocalización (solo en móvil)
+            if (navigator.geolocation && !isTestingOnDesktop) {
+                watchId = navigator.geolocation.watchPosition(
+                    (position) => {
+                        if (isPaused) return;
+                        
+                        const { latitude, longitude, accuracy } = position.coords;
+                        
+                        // Solo usar datos con precisión aceptable
+                        if (accuracy > 50) {
+                            console.log('Precisión baja, descartando punto');
+                            return;
+                        }
+                        
+                        const newPosition = { lat: latitude, lng: longitude, time: new Date() };
+                        positions.push(newPosition);
+                        
+                        // Calcular distancia si hay posiciones previas
+                        if (positions.length > 1) {
+                            const prevPos = positions[positions.length - 2];
+                            const distance = calculateDistance(
+                                prevPos.lat, prevPos.lng, 
+                                latitude, longitude
+                            );
+                            totalDistance += distance;
+                        }
+                        
+                        updateStats();
+                    },
+                    (error) => {
+                        console.error('Error en geolocalización:', error);
+                        alert('Error en el seguimiento GPS: ' + error.message);
+                        stopTracking();
+                    },
+                    { 
+                        enableHighAccuracy: true, 
+                        timeout: 10000, 
+                        maximumAge: 0 
+                    }
+                );
+            }
+        }
+        
+        // Pausar/reanudar actividad
+        function togglePauseActivity() {
+            if (!isTracking) return;
+            
+            if (isPaused) {
+                // Reanudar
+                isPaused = false;
+                pauseActivityBtn.innerHTML = '<i class="fas fa-pause mr-2"></i> Pausar';
+                const pauseEndTime = new Date();
+                totalPauseTime += Math.floor((pauseEndTime - pauseStartTime) / 1000);
+            } else {
+                // Pausar
+                isPaused = true;
+                pauseActivityBtn.innerHTML = '<i class="fas fa-play mr-2"></i> Reanudar';
+                pauseStartTime = new Date();
+            }
+        }
+        
+        // Detener el seguimiento
+        function stopTracking() {
+            if (!isTracking) return;
+            
+            isTracking = false;
+            clearInterval(timerInterval);
+            
+            if (watchId !== undefined) {
+                navigator.geolocation.clearWatch(watchId);
+            }
+            
+            // Guardar la actividad si hay datos
+            if (positions.length > 0 || isTestingOnDesktop) {
+                saveActivity();
+            }
+            
+            // Cerrar pantalla de actividad
+            activityScreen.style.display = 'none';
+            document.body.style.overflow = 'auto';
+        }
+        
+        // Guardar la actividad
+        function saveActivity() {
+            const activity = {
+                date: new Date().toISOString(),
+                distance: totalDistance,
+                time: elapsedTime,
+                type: currentActivityType,
+                avgSpeed: currentSpeed,
+                calories: calculateCalories(),
+                weight: parseFloat(userWeight.value) || 70,
+                intensity: activityIntensity.value
+            };
+            
+            // Guardar en localStorage
+            let activities = JSON.parse(localStorage.getItem('activities') || '[]');
+            activities.push(activity);
+            localStorage.setItem('activities', JSON.stringify(activities));
+            
+            // Mostrar notificación
+            showNotification('Actividad guardada correctamente!');
+            
+            // Recargar actividades y estadísticas
+            loadRecentActivities();
+            loadWeeklyStats();
+        }
+        
+        // Cargar actividades recientes
+        function loadRecentActivities() {
+            const activities = JSON.parse(localStorage.getItem('activities') || '[]');
+            
+            if (activities.length === 0) {
+                recentActivities.innerHTML = `
+                    <div class="text-center py-8 text-cyber-blue">
+                        <i class="fas fa-inbox text-4xl mb-2"></i>
+                        <p>No hay actividades recientes</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            // Mostrar las últimas 5 actividades
+            const recent = activities.slice(-5).reverse();
+            recentActivities.innerHTML = '';
+            
+            recent.forEach(activity => {
+                const div = document.createElement('div');
+                div.className = 'py-3 px-4 border-b border-cyber-gray';
+                
+                const date = new Date(activity.date);
+                const formattedDate = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+                
+                let icon = '';
+                let color = '';
+                if (activity.type === 'running') {
+                    icon = '<i class="fas fa-running"></i>';
+                    color = 'text-cyber-blue';
+                } else if (activity.type === 'walking') {
+                    icon = '<i class="fas fa-walking"></i>';
+                    color = 'text-cyber-pink';
+                } else if (activity.type === 'cycling') {
+                    icon = '<i class="fas fa-bicycle"></i>';
+                    color = 'text-cyber-purple';
+                }
+                
+                div.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <div class="flex items-center">
+                            <span class="text-lg mr-2 ${color}">${icon}</span>
+                            <div>
+                                <div class="text-sm">${formattedDate}</div>
+                                <div class="text-xs text-cyber-blue">${activity.type}</div>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-bold cyber-font">${activity.distance.toFixed(2)} km</div>
+                            <div class="text-xs">${formatTime(activity.time)}</div>
+                        </div>
+                    </div>
+                `;
+                
+                recentActivities.appendChild(div);
+            });
+        }
+        
+        // Cargar estadísticas semanales
+        function loadWeeklyStats() {
+            const activities = JSON.parse(localStorage.getItem('activities') || '[]');
+            const oneWeekAgo = new Date();
+            oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+            
+            const weeklyActivitiesData = activities.filter(activity => {
+                return new Date(activity.date) >= oneWeekAgo;
+            });
+            
+            let totalDistance = 0;
+            let totalTime = 0;
+            let totalCalories = 0;
+            
+            weeklyActivitiesData.forEach(activity => {
+                totalDistance += activity.distance;
+                totalTime += activity.time;
+                totalCalories += activity.calories || 0;
+            });
+            
+            weeklyDistance.textContent = totalDistance.toFixed(2) + ' km';
+            weeklyTime.textContent = formatTimeForDisplay(totalTime);
+            weeklyCalories.textContent = totalCalories;
+            weeklyActivities.textContent = weeklyActivitiesData.length;
+        }
+        
+        // Mostrar notificación
+        function showNotification(message) {
+            // Crear elemento de notificación
+            const notification = document.createElement('div');
+            notification.className = 'fixed bottom-4 right-4 cyber-glass cyber-border px-4 py-3 rounded-lg cyber-font text-cyber-blue';
+            notification.textContent = message;
+            notification.id = 'notification';
+            
+            document.body.appendChild(notification);
+            
+            // Eliminar después de 3 segundos
+            setTimeout(() => {
+                notification.remove();
+            }, 3000);
+        }
+        
+        // Inicializar la aplicación cuando se carga la página
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
 </body>
 </html>
 
